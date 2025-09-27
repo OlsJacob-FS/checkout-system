@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useCart } from '../contexts/CartContext';
 
-interface Product {
+interface ProductData {
   id: number;
   name: string;
   description: string;
@@ -15,7 +15,7 @@ interface Product {
   category_slug: string;
 }
 
-interface Shop {
+interface ShopData {
   id: number;
   name: string;
   description: string;
@@ -29,18 +29,12 @@ interface Shop {
 const Shop: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const { addItem } = useCart();
-  const [shop, setShop] = useState<Shop | null>(null);
-  const [products, setProducts] = useState<Product[]>([]);
+  const [shop, setShop] = useState<ShopData | null>(null);
+  const [products, setProducts] = useState<ProductData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (slug) {
-      fetchShopData();
-    }
-  }, [slug]);
-
-  const fetchShopData = async () => {
+  const fetchShopData = useCallback(async () => {
     try {
       setLoading(true);
       const [shopResponse, productsResponse] = await Promise.all([
@@ -56,9 +50,15 @@ const Shop: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [slug]);
 
-  const handleAddToCart = (product: Product) => {
+  useEffect(() => {
+    if (slug) {
+      fetchShopData();
+    }
+  }, [slug, fetchShopData]);
+
+  const handleAddToCart = (product: ProductData) => {
     if (!shop) return;
 
     addItem({

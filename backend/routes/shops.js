@@ -1,191 +1,196 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import axios from 'axios';
-import { useCart } from '../contexts/CartContext';
+const express = require('express');
+const { body, validationResult } = require('express-validator');
+const { query } = require('../config/database');
+const { authenticateToken, optionalAuth } = require('../middleware/auth');
 
-interface Product {
-  id: number;
-  name: string;
-  description: string;
-  price: number;
-  compare_price?: number;
-  images: string[];
-  inventory: number;
-  category_name: string;
-  category_slug: string;
-}
+const router = express.Router();
 
-interface Shop {
-  id: number;
-  name: string;
-  description: string;
-  slug: string;
-  logo_url?: string;
-  banner_url?: string;
-  ownerName: string;
-  productsCount: number;
-}
-
-const Shop: React.FC = () => {
-  const { slug } = useParams<{ slug: string }>();
-  const { addItem } = useCart();
-  const [shop, setShop] = useState<Shop | null>(null);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (slug) {
-      fetchShopData();
+// Create shop
+router.post('/', authenticateToken, [
+  body('name').trim().isLength({ min: 1, max: 200 }),
+  body('description').optional().trim(),
+  body('slug').trim().isLength({ min: 1, max: 200 }).matches(/^[a-z0-9-]+$/),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
-  }, [slug]);
 
-  const fetchShopData = async () => {
-    try {
-      setLoading(true);
-      const [shopResponse, productsResponse] = await Promise.all([
-        axios.get(`${process.env.REACT_APP_API_URL}/api/shops/${slug}`),
-        axios.get(`${process.env.REACT_APP_API_URL}/api/products/shop/${slug}`)
-      ]);
+    const { name, description, slug } = req.body;
 
-      setShop(shopResponse.data.shop);
-      setProducts(productsResponse.data.products);
-    } catch (error) {
-      setError('Failed to load shop data');
-      console.error('Error fetching shop data:', error);
-    } finally {
-      setLoading(false);
+    // Check if slug is unique
+    const existingShop = await query(
+      'SELECT id FROM shops WHERE slug = $1',
+      [slug]
+    );
+
+    if (existingShop.rows.length > 0) {
+      return res.status(400).json({ message: 'Shop slug already exists' });
     }
-  };
 
-  const handleAddToCart = (product: Product) => {
-    if (!shop) return;
+    // Create shop
+    const result = await query(
+      `INSERT INTO shops (owner_id, name, description, slug)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, description, slug, logo_url, banner_url, is_active, created_at`,
+      [req.user.id, name, description, slug]
+    );
 
-    addItem({
-      productId: product.id,
-      name: product.name,
-      price: product.price,
-      quantity: 1,
-      image: product.images[0],
-      shopId: shop.id,
-      shopName: shop.name,
+    res.status(201).json({
+      message: 'Shop created successfully',
+      shop: result.rows[0]
     });
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600"></div>
-      </div>
-    );
+  } catch (error) {
+    console.error('Create shop error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
+});
 
-  if (error || !shop) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">Shop Not Found</h1>
-          <p className="text-gray-600 mb-8">The shop you're looking for doesn't exist.</p>
-          <Link to="/" className="btn-primary">Go Home</Link>
-        </div>
-      </div>
+// Get user's shops
+router.get('/my-shops', authenticateToken, async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, name, description, slug, logo_url, banner_url, is_active, created_at
+       FROM shops WHERE owner_id = $1 ORDER BY created_at DESC`,
+      [req.user.id]
     );
+
+    res.json({ shops: result.rows });
+  } catch (error) {
+    console.error('Get shops error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
+});
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Shop Header */}
-      <div className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="flex items-center space-x-6">
-            {shop.logo_url && (
-              <img
-                src={shop.logo_url}
-                alt={shop.name}
-                className="w-20 h-20 rounded-full object-cover"
-              />
-            )}
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">{shop.name}</h1>
-              <p className="text-gray-600 mt-2">{shop.description}</p>
-              <p className="text-sm text-gray-500 mt-1">
-                By {shop.ownerName} • {shop.productsCount} products
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
+// Get shop by slug
+router.get('/:slug', optionalAuth, async (req, res) => {
+  try {
+    const { slug } = req.params;
 
-      {/* Products Grid */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {products.length === 0 ? (
-          <div className="text-center py-12">
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">No Products Yet</h2>
-            <p className="text-gray-600">This shop hasn't added any products yet.</p>
-          </div>
-        ) : (
-          <>
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Products</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {products.map((product) => (
-                <div key={product.id} className="card p-4 hover:shadow-lg transition-shadow">
-                  <Link to={`/product/${product.id}`}>
-                    {product.images && product.images.length > 0 ? (
-                      <img
-                        src={product.images[0]}
-                        alt={product.name}
-                        className="w-full h-48 object-cover rounded-lg mb-4"
-                      />
-                    ) : (
-                      <div className="w-full h-48 bg-gray-200 rounded-lg mb-4 flex items-center justify-center">
-                        <span className="text-gray-400">No Image</span>
-                      </div>
-                    )}
-                  </Link>
-                  
-                  <div className="space-y-2">
-                    <Link to={`/product/${product.id}`}>
-                      <h3 className="font-semibold text-gray-900 hover:text-primary-600">
-                        {product.name}
-                      </h3>
-                    </Link>
-                    
-                    <div className="flex items-center space-x-2">
-                      <span className="text-lg font-bold text-primary-600">
-                        ${product.price.toFixed(2)}
-                      </span>
-                      {product.compare_price && (
-                        <span className="text-sm text-gray-500 line-through">
-                          ${product.compare_price.toFixed(2)}
-                        </span>
-                      )}
-                    </div>
-                    
-                    <p className="text-sm text-gray-600 line-clamp-2">
-                      {product.description}
-                    </p>
-                    
-                    <div className="flex items-center justify-between pt-2">
-                      <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                        {product.category_name}
-                      </span>
-                      <button
-                        onClick={() => handleAddToCart(product)}
-                        disabled={product.inventory === 0}
-                        className="btn-primary text-sm py-1 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {product.inventory === 0 ? 'Out of Stock' : 'Add to Cart'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
+    const result = await query(
+      `SELECT s.id, s.name, s.description, s.slug, s.logo_url, s.banner_url, s.is_active, s.created_at,
+              u.first_name, u.last_name
+       FROM shops s
+       JOIN users u ON s.owner_id = u.id
+       WHERE s.slug = $1 AND s.is_active = true`,
+      [slug]
+    );
 
-export default Shop;
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Shop not found' });
+    }
+
+    const shop = result.rows[0];
+
+    // Get products count
+    const productsCount = await query(
+      'SELECT COUNT(*) as count FROM products WHERE shop_id = $1 AND is_active = true',
+      [shop.id]
+    );
+
+    res.json({
+      shop: {
+        ...shop,
+        ownerName: `${shop.first_name} ${shop.last_name}`,
+        productsCount: parseInt(productsCount.rows[0].count)
+      }
+    });
+  } catch (error) {
+    console.error('Get shop error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update shop
+router.put('/:id', authenticateToken, [
+  body('name').optional().trim().isLength({ min: 1, max: 200 }),
+  body('description').optional().trim(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { id } = req.params;
+    const { name, description } = req.body;
+
+    // Check if user owns the shop
+    const shopResult = await query(
+      'SELECT id FROM shops WHERE id = $1 AND owner_id = $2',
+      [id, req.user.id]
+    );
+
+    if (shopResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Shop not found or access denied' });
+    }
+
+    // Update shop
+    const updateFields = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (name !== undefined) {
+      updateFields.push(`name = $${paramCount}`);
+      values.push(name);
+      paramCount++;
+    }
+
+    if (description !== undefined) {
+      updateFields.push(`description = $${paramCount}`);
+      values.push(description);
+      paramCount++;
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ message: 'No fields to update' });
+    }
+
+    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+
+    const result = await query(
+      `UPDATE shops SET ${updateFields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      values
+    );
+
+    res.json({
+      message: 'Shop updated successfully',
+      shop: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update shop error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete shop
+router.delete('/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user owns the shop
+    const shopResult = await query(
+      'SELECT id FROM shops WHERE id = $1 AND owner_id = $2',
+      [id, req.user.id]
+    );
+
+    if (shopResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Shop not found or access denied' });
+    }
+
+    // Soft delete shop
+    await query(
+      'UPDATE shops SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id]
+    );
+
+    res.json({ message: 'Shop deleted successfully' });
+  } catch (error) {
+    console.error('Delete shop error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router;
